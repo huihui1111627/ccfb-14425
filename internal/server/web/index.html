@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>水族馆维生系统 · 持续性能剖析</title>
+<style>
+  :root {
+    --bg: #0f1720; --panel: #18222e; --line: #2a3a4a; --text: #dce6f0;
+    --muted: #8aa0b4; --accent: #4db1ff; --slow: #ff7a59; --fast: #4cd07a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 13px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", monospace;
+         background: var(--bg); color: var(--text); }
+  header { padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
+           display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  .tabs { display: flex; gap: 4px; padding: 8px 16px 0; background: var(--panel);
+          border-bottom: 1px solid var(--line); }
+  .tabs button { background: transparent; color: var(--muted); border: 1px solid transparent;
+          border-bottom: none; padding: 7px 14px; cursor: pointer; font-size: 13px;
+          border-radius: 6px 6px 0 0; }
+  .tabs button.active { color: var(--text); background: var(--bg); border-color: var(--line); }
+  main { padding: 14px 16px; }
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; margin-bottom: 12px; }
+  label { display: flex; flex-direction: column; gap: 3px; color: var(--muted); font-size: 11px; }
+  select, input { background: var(--panel); color: var(--text); border: 1px solid var(--line);
+          border-radius: 5px; padding: 5px 8px; font: inherit; min-width: 120px; }
+  button.action { background: var(--accent); color: #08141f; border: none; border-radius: 5px;
+          padding: 6px 14px; cursor: pointer; font-weight: 600; }
+  button.action.secondary { background: var(--panel); color: var(--text); border: 1px solid var(--line); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+          padding: 12px; margin-bottom: 12px; }
+  .card h2 { font-size: 13px; margin: 0 0 8px; color: var(--muted); font-weight: 600; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 5px 10px; border-bottom: 1px solid var(--line);
+           white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; cursor: pointer; user-select: none; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.slow td.dir { color: var(--slow); font-weight: 700; }
+  tr.fast td.dir { color: var(--fast); font-weight: 700; }
+  .muted { color: var(--muted); }
+  .pill { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px;
+          background: #243446; }
+  .pill.slow { background: #4a231a; color: var(--slow); }
+  .pill.fast { background: #173d27; color: var(--fast); }
+  .pill.same { background: #243446; color: var(--muted); }
+  #flameWrap { overflow-x: auto; background: #0b121a; border-radius: 6px; padding: 8px; }
+  svg { display: block; }
+  .bar { stroke: #0b121a; stroke-width: 0.5; cursor: pointer; }
+  .bar:hover { stroke: #fff; stroke-width: 1; }
+  .barlabel { fill: #10202e; font-size: 10px; pointer-events: none; }
+  .tooltip { position: fixed; display: none; background: #05090d; border: 1px solid var(--line);
+             border-radius: 6px; padding: 8px 10px; font-size: 12px; z-index: 10;
+             max-width: 380px; pointer-events: none; }
+  .tooltip b { color: var(--accent); }
+  .legend { display: flex; gap: 14px; align-items: center; margin-bottom: 8px; color: var(--muted); font-size: 11px; }
+  .swatch { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin-right: 4px;
+            vertical-align: -1px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 1100px) { .grid2 { grid-template-columns: 1fr; } }
+  .hint { color: var(--muted); font-size: 11px; margin-top: 6px; }
+  .search-hit { stroke: #ffd34d !important; stroke-width: 1.5; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🐠 水族馆维生系统 · 持续性能剖析</h1>
+  <span class="muted" id="globalMeta"></span>
+</header>
+
+<div class="tabs">
+  <button data-tab="flame" class="active">火焰图</button>
+  <button data-tab="diff">版本差分火焰图</button>
+  <button data-tab="hot">热点函数排行</button>
+  <button data-tab="status">上报情况</button>
+</div>
+
+<main>
+  <div class="controls">
+    <label>程序
+      <select id="program"></select>
+    </label>
+    <label id="versionLabel">版本
+      <select id="version"></select>
+    </label>
+    <label id="oldVersionLabel" style="display:none">旧版本
+      <select id="oldVersion"></select>
+    </label>
+    <label id="newVersionLabel" style="display:none">新版本
+      <select id="newVersion"></select>
+    </label>
+    <label>起始时间 (ns, 留空不限)
+      <input id="startNs" type="number" min="0" placeholder="0">
+    </label>
+    <label>结束时间 (ns, 留空不限)
+      <input id="endNs" type="number" min="0" placeholder="∞">
+    </label>
+    <label>标签筛选 (key=value, 多个用逗号)
+      <input id="labels" placeholder="tank=T03,pump=2">
+    </label>
+    <label>函数高亮
+      <input id="highlight" placeholder="函数名片段">
+    </label>
+    <button class="action" id="refresh">查询</button>
+    <button class="action secondary" id="resetZoom">重置缩放</button>
+  </div>
+
+  <section id="tab-flame"></section>
+  <section id="tab-diff" style="display:none"></section>
+  <section id="tab-hot" style="display:none"></section>
+  <section id="tab-status" style="display:none"></section>
+</main>
+
+<div class="tooltip" id="tooltip"></div>
+<script src="app.js"></script>
+</body>
+</html>
